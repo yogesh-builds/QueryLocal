@@ -22,28 +22,54 @@ with st.sidebar:
     st.code(schema, language="sql")
     st.write(f"Model: `{MODEL}`")
 
+# (question so far, clarifying question) while waiting for the user's answer
+if "pending" not in st.session_state:
+    st.session_state.pending = None
+pending = st.session_state.pending
+
+if pending:
+    st.info(f"I need one detail: {pending[1]}")
+    if st.button("Cancel and ask something else"):
+        st.session_state.pending = None
+        st.rerun()
+
 with st.form("ask"):
-    question = st.text_input(
-        "Your question",
+    text = st.text_input(
+        "Your answer" if pending else "Your question",
         placeholder="Who are the top 3 customers by total order amount?",
     )
-    submitted = st.form_submit_button("Ask")
+    submitted = st.form_submit_button("Send" if pending else "Ask")
 
-if submitted and question.strip():
+if submitted and text.strip():
+    question = f"{pending[0]}\nUser clarification: {text.strip()}" if pending else text.strip()
+    st.session_state.pending = None
     start = time.time()
+    result, error = None, None
     try:
         with st.spinner("Thinking..."):
-            sql, columns, rows = answer(question.strip(), schema)
-        elapsed = time.time() - start
+            result = answer(question, schema)
+    except Exception as e:
+        error = e
+    elapsed = time.time() - start
 
+    if error:
+        st.error(f"Could not answer: {error}")
+    elif result["status"] == "clarify":
+        st.session_state.pending = (question, result["question"])
+        st.rerun()
+    elif result["status"] == "impossible":
+        st.warning(f"I can't answer that from this data: {result['reason']}")
+    else:
         st.subheader("Generated SQL")
-        st.code(sql, language="sql")
-
+        st.code(result["sql"], language="sql")
+        if result["assumption"]:
+            st.info(f"Assumption: {result['assumption']}")
         st.subheader("Result")
-        if rows:
-            st.dataframe(pd.DataFrame(rows, columns=columns), use_container_width=True)
+        if result["rows"]:
+            st.dataframe(
+                pd.DataFrame(result["rows"], columns=result["columns"]),
+                use_container_width=True,
+            )
         else:
             st.info("The query ran fine but returned no rows.")
-        st.caption(f"{len(rows)} row(s) in {elapsed:.1f}s")
-    except Exception as e:
-        st.error(f"Could not answer: {e}")
+        st.caption(f"{len(result['rows'])} row(s) in {elapsed:.1f}s")
