@@ -3,7 +3,7 @@ import time
 import pandas as pd
 import streamlit as st
 
-from text_to_sql import DB_PATH, MODEL, answer, get_schema
+from text_to_sql import DB_PATH, MODEL, OLLAMA_MODEL, answer, get_schema
 
 st.set_page_config(page_title="QueryLocal", page_icon="🗄️", layout="wide")
 st.title("QueryLocal")
@@ -20,7 +20,9 @@ schema = load_schema()
 with st.sidebar:
     st.header("Database")
     st.code(schema, language="sql")
-    st.write(f"Model: `{MODEL}`")
+    choice = st.radio("Model", ["Gemini (cloud)", "Ollama (local)"])
+    backend = "gemini" if choice.startswith("Gemini") else "ollama"
+    st.write(f"Using: `{MODEL if backend == 'gemini' else OLLAMA_MODEL}`")
 
 # (question so far, clarifying question) while waiting for the user's answer
 if "pending" not in st.session_state:
@@ -47,7 +49,7 @@ if submitted and text.strip():
     result, error = None, None
     try:
         with st.spinner("Thinking..."):
-            result = answer(question, schema)
+            result = answer(question, schema, backend)
     except Exception as e:
         error = e
     elapsed = time.time() - start

@@ -1,9 +1,11 @@
 import json
+import os
 import re
 import sqlite3
 import time
 from datetime import date
 
+import ollama
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -12,6 +14,8 @@ load_dotenv()
 client = genai.Client()
 
 MODEL = "models/gemini-3.8-flash"
+OLLAMA_MODEL = "qwen2.5-coder:3b"
+BACKEND = os.getenv("BACKEND", "gemini")   # "gemini" or "ollama"
 DB_PATH = "data/shop.db"
 MAX_RETRIES = 2
 MAX_CLARIFY_ROUNDS = 2
@@ -53,17 +57,42 @@ def validate_sql(sql):
     return body
 
 
-def ask_model(prompt, as_json=False):
+def ask_gemini(prompt, as_json):
     config = types.GenerateContentConfig(
         response_mime_type="application/json" if as_json else "text/plain"
     )
     response = client.models.generate_content(
         model=MODEL, contents=prompt, config=config
     )
-    return response.text.strip()
+    return response.text
 
 
-def interpret(question, schema):
+ollama_client = ollama.Client(timeout=120)
+
+
+def ask_ollama(prompt, as_json):
+    response = ollama_client.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        format="json" if as_json else None,
+        think=False,
+        options={"temperature": 0, "num_predict": 512},
+    )
+    return response["message"]["content"]
+
+
+
+def ask_model(prompt, backend, as_json=False):
+    start = time.time()
+    if backend == "ollama":
+        text = ask_ollama(prompt, as_json)
+    else:
+        text = ask_gemini(prompt, as_json)
+    print(f"[{backend} call took {time.time() - start:.1f}s]")
+    return text.strip()
+
+
+def interpret(question, schema, backend):
     """Ask the model to answer with SQL, a clarifying question, or 'impossible'."""
     prompt = f"""You are an expert SQLite analyst.
 Database schema:
@@ -86,7 +115,7 @@ Rules:
 - SQL must be a single read-only SELECT.
 
 Question: {question}"""
-    text = ask_model(prompt, as_json=True)
+    text = ask_model(prompt, backend, as_json=True)
     try:
         result = json.loads(text)
         if result.get("status") not in ("ok", "clarify", "impossible"):
@@ -97,7 +126,7 @@ Question: {question}"""
         return {"status": "ok", "sql": clean_sql(text), "assumption": ""}
 
 
-def fix_sql(question, schema, bad_sql, error):
+def fix_sql(question, schema, bad_sql, error, backend):
     prompt = f"""You are an expert SQLite analyst.
 Schema:
 
@@ -113,7 +142,7 @@ Error message: {error}
 Write a corrected ONE SQLite SELECT query.
 Return only the SQL. No explanation, no markdown.
 Today's date is {date.today()}."""
-    return clean_sql(ask_model(prompt))
+    return clean_sql(ask_model(prompt, backend))
 
 
 def run_query(db_path, sql):
@@ -126,14 +155,14 @@ def run_query(db_path, sql):
     return columns, rows
 
 
-def answer(question, schema):
+def answer(question, schema, backend=BACKEND):
     """Return a dict with status 'ok', 'clarify' or 'impossible'.
 
     'ok' also has sql, columns, rows, assumption.
     'clarify' has question. 'impossible' has reason.
     Raises an exception if the SQL still fails after all retries.
     """
-    result = interpret(question, schema)
+    result = interpret(question, schema, backend)
     if result["status"] != "ok":
         return result
 
@@ -153,7 +182,7 @@ def answer(question, schema):
             if attempt == MAX_RETRIES:
                 raise
             print(f"Attempt {attempt + 1} failed ({e}). Asking the model to fix it...")
-            sql = fix_sql(question, schema, sql, str(e))
+            sql = fix_sql(question, schema, sql, str(e), backend)
 
 
 def show_result(result, seconds):
@@ -175,7 +204,7 @@ def show_result(result, seconds):
 
 def main():
     schema = get_schema(DB_PATH)
-    print("QueryLocal ready. Ask a question about your data (type 'quit' to exit).")
+    print(f"QueryLocal ready using {BACKEND}. Ask a question (type 'quit' to exit).")
     while True:
         question = input("\nQuestion: ").strip()
         if question.lower() in ("quit", "exit", "q"):
