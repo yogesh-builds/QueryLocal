@@ -3,17 +3,19 @@ import os
 import re
 import sqlite3
 import time
+from pathlib import Path
 from datetime import date
 
 import ollama
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors
 from google.genai import types
 
 load_dotenv()
 client = genai.Client()
 
-MODEL = "models/gemini-3.8-flash"
+MODEL = "gemini-3.5-flash-lite"
 OLLAMA_MODEL = "qwen2.5-coder:3b"
 BACKEND = os.getenv("BACKEND", "gemini")   # "gemini" or "ollama"
 DB_PATH = "data/shop.db"
@@ -61,10 +63,22 @@ def ask_gemini(prompt, as_json):
     config = types.GenerateContentConfig(
         response_mime_type="application/json" if as_json else "text/plain"
     )
-    response = client.models.generate_content(
-        model=MODEL, contents=prompt, config=config
-    )
-    return response.text
+    for attempt in range(6):
+        try:
+            response = client.models.generate_content(
+                model=MODEL, contents=prompt, config=config
+            )
+            return response.text
+        except errors.APIError as e:
+            if e.code == 429 and "PerDay" in str(e):
+                raise   # daily quota used up: retrying only wastes requests
+            # 429 = rate limit, 5xx = Google overloaded: wait and try again
+            if e.code in (429, 500, 503, 504) and attempt < 5:
+                wait = min(5 * 2 ** attempt, 60)   # 5s, 10s, 20s, 40s, 60s
+                print(f"Gemini busy ({e.code}). Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 ollama_client = ollama.Client(timeout=120)
@@ -147,7 +161,8 @@ Today's date is {date.today()}."""
 
 def run_query(db_path, sql):
     # Open the database read-only so a bad query can never change data.
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    conn.text_factory = lambda b: b.decode(errors="ignore")
     cur = conn.execute(sql)
     columns = [d[0] for d in cur.description]
     rows = cur.fetchall()
@@ -155,7 +170,7 @@ def run_query(db_path, sql):
     return columns, rows
 
 
-def answer(question, schema, backend=BACKEND):
+def answer(question, schema, backend=BACKEND, db_path=DB_PATH):
     """Return a dict with status 'ok', 'clarify' or 'impossible'.
 
     'ok' also has sql, columns, rows, assumption.
@@ -170,7 +185,7 @@ def answer(question, schema, backend=BACKEND):
     for attempt in range(MAX_RETRIES + 1):
         try:
             safe_sql = validate_sql(sql)
-            columns, rows = run_query(DB_PATH, safe_sql)
+            columns, rows = run_query(db_path, safe_sql)
             return {
                 "status": "ok",
                 "sql": safe_sql,
