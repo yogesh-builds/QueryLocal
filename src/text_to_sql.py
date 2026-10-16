@@ -20,20 +20,45 @@ OLLAMA_MODEL = "qwen2.5-coder:3b"
 BACKEND = os.getenv("BACKEND", "gemini")   # "gemini" or "ollama"
 DB_PATH = "data/shop.db"
 MAX_RETRIES = 2
+SAMPLE_ROWS = int(os.getenv("SAMPLE_ROWS", "0"))  # example rows shown per table
 MAX_CLARIFY_ROUNDS = 2
 
 FORBIDDEN = ["drop", "delete", "update", "insert", "alter", "create",
              "replace", "attach", "detach", "pragma", "vacuum", "truncate"]
 
 
-def get_schema(db_path):
-    """Read the CREATE TABLE statements so the model knows the tables and columns."""
+def get_schema(db_path, sample_rows=None):
+    """Read the CREATE TABLE statements so the model knows the tables and columns.
+
+    With sample_rows > 0, also show a few example rows from each table, so the
+    model sees what the data looks like (real values, which column holds what).
+    """
+    if sample_rows is None:
+        sample_rows = SAMPLE_ROWS
     conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
+    conn.text_factory = lambda b: b.decode(errors="ignore")
+    tables = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
     ).fetchall()
+    parts = []
+    for name, sql in tables:
+        part = sql
+        if sample_rows > 0:
+            try:
+                cur = conn.execute(f'SELECT * FROM "{name}" LIMIT {int(sample_rows)}')
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+            except sqlite3.Error:
+                rows = []
+            if rows:
+                lines = [" | ".join(cols)]
+                for row in rows:
+                    lines.append(" | ".join(str(v)[:40] for v in row))
+                part += (f"\n/* {len(rows)} example rows from {name}:\n"
+                         + "\n".join(lines) + "\n*/")
+        parts.append(part)
     conn.close()
-    return "\n\n".join(r[0] for r in rows)
+    return "\n\n".join(parts)
 
 
 def clean_sql(text):

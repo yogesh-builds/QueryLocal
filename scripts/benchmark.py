@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--delay", type=float, default=0, help="seconds to pause between questions")
     ap.add_argument("--retry-errors", action="store_true", help="re-run rows that ended in an error")
     ap.add_argument("--model", help="Ollama model to test, e.g. qwen3.5:4b")
+    ap.add_argument("--sample-rows", type=int, default=0, help="example rows per table in the prompt")
     args = ap.parse_args()
     if args.model:
         t2s.OLLAMA_MODEL = args.model
@@ -53,6 +54,8 @@ def main():
 
     model = t2s.MODEL if args.backend == "gemini" else t2s.OLLAMA_MODEL
     safe_model = model.replace("/", "_").replace(":", "_")
+    if args.sample_rows:
+        safe_model += f"-rows{args.sample_rows}"
     RESULTS.mkdir(exist_ok=True)
     out_path = RESULTS / f"{args.backend}_{safe_model}_{args.n}.csv"
     if args.retry_errors and out_path.exists():
@@ -81,7 +84,7 @@ def main():
             start = time.time()
             status, error, pred_sql, correct = "ok", "", "", False
             try:
-                schema = t2s.get_schema(db_path)
+                schema = t2s.get_schema(db_path, args.sample_rows)
                 result = t2s.answer(ex["question"], schema, args.backend, db_path=db_path)
                 status = result["status"]
                 if status == "ok":
