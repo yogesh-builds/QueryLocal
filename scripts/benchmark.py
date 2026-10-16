@@ -43,7 +43,10 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--delay", type=float, default=0, help="seconds to pause between questions")
     ap.add_argument("--retry-errors", action="store_true", help="re-run rows that ended in an error")
+    ap.add_argument("--model", help="Ollama model to test, e.g. qwen3.5:4b")
     args = ap.parse_args()
+    if args.model:
+        t2s.OLLAMA_MODEL = args.model
 
     examples = json.load(open(SPIDER / "dev.json", encoding="utf-8"))
     sample = random.Random(args.seed).sample(examples, args.n)
